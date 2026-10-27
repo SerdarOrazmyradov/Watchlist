@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Movie Watchlist</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23570df8'%3E%3Cpath d='M4 4h16v16H4V4zm2 2v12h12V6H6zm2 2h2v2H8V8zm4 0h2v2h-2V8zm-4 4h2v2H8v-2zm4 0h2v2h-2v-2z'/%3E%3C/svg%3E" />
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  .movie-card { transition: transform .2s, box-shadow .2s; }
+  .movie-card:hover { transform: translateY(-3px); }
+</style>
+</head>
+<body class="min-h-screen bg-base-200 transition-colors">
+
+<!-- Navbar -->
+<div class="navbar bg-base-100 shadow-sm sticky top-0 z-20">
+  <div class="flex-1 gap-2 px-4">
+    <i data-lucide="film" class="w-6 h-6 text-primary"></i>
+    <span class="text-lg font-semibold">Watchlist</span>
+  </div>
+  <div class="flex-none gap-2 px-4">
+    <label class="input input-bordered input-sm flex items-center gap-2 w-40 md:w-64">
+      <i data-lucide="search" class="w-4 h-4 opacity-60"></i>
+      <input id="searchInput" type="text" placeholder="Search..." class="grow bg-transparent outline-none text-sm" />
+    </label>
+    <label class="swap swap-rotate btn btn-ghost btn-circle">
+      <input id="themeToggle" type="checkbox" />
+      <i data-lucide="sun" class="swap-off w-5 h-5"></i>
+      <i data-lucide="moon" class="swap-on w-5 h-5"></i>
+    </label>
+  </div>
+</div>
+
+<main class="max-w-6xl mx-auto p-4 md:p-6">
+  <!-- Filters + Add -->
+  <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5">
+    <div id="filterBar" class="flex flex-wrap gap-2"></div>
+    <button class="btn btn-primary gap-2" onclick="openForm()">
+      <i data-lucide="plus" class="w-4 h-4"></i> Add Movie
+    </button>
+  </div>
+
+  <!-- Grid -->
+  <div id="grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+  <div id="emptyState" class="hidden text-center py-16">
+    <i data-lucide="clapperboard" class="w-16 h-16 mx-auto opacity-40 mb-3"></i>
+    <p class="text-lg opacity-60">No movies yet. Add your first one!</p>
+  </div>
+</main>
+
+<!-- Form modal -->
+<dialog id="formModal" class="modal">
+  <div class="modal-box">
+    <h3 id="formTitle" class="font-bold text-lg mb-4">Add Movie</h3>
+    <form id="movieForm" class="flex flex-col gap-3">
+      <input type="hidden" id="movieId" />
+      <input id="title" type="text" required placeholder="Movie title" class="input input-bordered" />
+      <div class="grid grid-cols-2 gap-3">
+        <input id="year" type="number" min="1888" max="2099" placeholder="Year" class="input input-bordered" />
+        <select id="status" class="select select-bordered">
+          <option>Watchlist</option>
+          <option>Watched</option>
+          <option>Favorite</option>
+        </select>
+      </div>
+      <div class="modal-action">
+        <button type="button" class="btn" onclick="formModal.close()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<script>
+/* ---------- Status config ---------- */
+const STATUSES = {
+  'Watchlist': 'badge-ghost',
+  'Watched':   'badge-success',
+  'Favorite':  'badge-warning',
+};
+
+/* ---------- IndexedDB ---------- */
+const DB_NAME = 'MovieWatchlistDB';
+let db, movies = [], currentFilter = 'all', currentSearch = '';
+
+function openDB() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(DB_NAME, 1);
+    r.onupgradeneeded = e => {
+      const d = e.target.result;
+      if (!d.objectStoreNames.contains('movies')) d.createObjectStore('movies', { keyPath: 'id', autoIncrement: true });
+    };
+    r.onsuccess = e => { db = e.target.result; res(); };
+    r.onerror = e => rej(e.target.error);
+  });
+}
+const tx = (mode='readonly') => db.transaction('movies', mode).objectStore('movies');
+const all = () => new Promise(r => { const q = tx().getAll(); q.onsuccess = () => r(q.result); });
+const put = v => new Promise(r => { const q = tx('readwrite').put(v); q.onsuccess = () => r(q.result); });
+const del = id => new Promise(r => { const q = tx('readwrite').delete(id); q.onsuccess = () => r(); });
+
+/* ---------- Helpers ---------- */
+const escapeHtml = s => String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/* ---------- Render ---------- */
+function renderFilters() {
+  const counts = { all: movies.length };
+  movies.forEach(m => counts[m.status] = (counts[m.status] || 0) + 1);
+  const btns = [`<button class="btn btn-sm filter-btn ${currentFilter==='all'?'btn-neutral':''}" data-filter="all">All (${counts.all})</button>`];
+  Object.keys(STATUSES).forEach(s => {
+    if (counts[s]) btns.push(`<button class="btn btn-sm filter-btn ${currentFilter===s?'btn-neutral':''}" data-filter="${s}">${s} (${counts[s]})</button>`);
+  });
+  document.getElementById('filterBar').innerHTML = btns.join('');
+}
+
+function renderGrid() {
+  const q = currentSearch.toLowerCase();
+  const filtered = movies.filter(m => {
+    const matchF = currentFilter === 'all' || m.status === currentFilter;
+    const matchS = !q || m.title.toLowerCase().includes(q);
+    return matchF && matchS;
+  });
+
+  const grid = document.getElementById('grid');
+  const empty = document.getElementById('emptyState');
+  if (!filtered.length) { grid.innerHTML = ''; empty.classList.remove('hidden'); lucide.createIcons(); return; }
+  empty.classList.add('hidden');
+
+  grid.innerHTML = filtered.map(m => `
+    <div class="movie-card card bg-base-100 shadow-md">
+      <div class="card-body p-5">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0 flex-1">
+            <h3 class="card-title text-base leading-tight">${escapeHtml(m.title)}</h3>
+            ${m.year ? `<p class="text-sm opacity-70 mt-0.5">${m.year}</p>` : ''}
+          </div>
+          <span class="badge ${STATUSES[m.status]||'badge-ghost'}">${m.status}</span>
+        </div>
+        <div class="card-actions justify-between mt-3">
+          <div class="flex gap-1">
+            <button class="btn btn-ghost btn-sm btn-circle ${m.status==='Watched'?'btn-success':''}" onclick="setStatus(${m.id},'Watched')" title="Mark as Watched">
+              <i data-lucide="check" class="w-4 h-4"></i>
+            </button>
+            <button class="btn btn-ghost btn-sm btn-circle ${m.status==='Favorite'?'btn-warning':''}" onclick="setStatus(${m.id},'Favorite')" title="Mark as Favorite">
+              <i data-lucide="star" class="w-4 h-4 ${m.status==='Favorite'?'fill-current':''}"></i>
+            </button>
+          </div>
+          <div class="flex gap-1">
+            <button class="btn btn-ghost btn-sm btn-circle" onclick="editMovie(${m.id})" title="Edit">
+              <i data-lucide="pencil" class="w-4 h-4"></i>
+            </button>
+            <button class="btn btn-ghost btn-sm btn-circle text-error" onclick="deleteMovie(${m.id})" title="Delete">
+              <i data-lucide="trash-2" class="w-4 h-4"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+  lucide.createIcons();
+}
+
+/* ---------- Actions ---------- */
+const formModal = document.getElementById('formModal');
+
+function openForm(movie = null) {
+  document.getElementById('formTitle').textContent = movie ? 'Edit Movie' : 'Add Movie';
+  document.getElementById('movieId').value = movie?.id || '';
+  document.getElementById('title').value = movie?.title || '';
+  document.getElementById('year').value = movie?.year || '';
+  document.getElementById('status').value = movie?.status || 'Watchlist';
+  formModal.showModal();
+}
+window.editMovie = id => openForm(movies.find(m => m.id === id));
+
+window.setStatus = async (id, status) => {
+  const m = movies.find(x => x.id === id);
+  if (!m) return;
+  m.status = status;
+  await put(m);
+  movies = await all();
+  renderFilters();
+  renderGrid();
+};
+
+window.deleteMovie = async id => {
+  if (!confirm('Delete this movie?')) return;
+  await del(id);
+  movies = await all();
+  renderFilters();
+  renderGrid();
+};
+
+document.getElementById('movieForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const id = document.getElementById('movieId').value;
+  const data = {
+    title: document.getElementById('title').value.trim(),
+    year: +document.getElementById('year').value || null,
+    status: document.getElementById('status').value,
+  };
+  if (id) data.id = +id;
+  await put(data);
+  movies = await all();
+  renderFilters();
+  renderGrid();
+  formModal.close();
+});
+
+/* ---------- Filters / Search ---------- */
+document.getElementById('filterBar').addEventListener('click', e => {
+  const btn = e.target.closest('.filter-btn');
+  if (!btn) return;
+  currentFilter = btn.dataset.filter;
+  renderFilters();
+  renderGrid();
+});
+document.getElementById('searchInput').addEventListener('input', e => {
+  currentSearch = e.target.value;
+  renderGrid();
+});
+
+/* ---------- Theme ---------- */
+document.getElementById('themeToggle').addEventListener('change', e => {
+  document.documentElement.dataset.theme = e.target.checked ? 'dark' : 'light';
+});
+
+/* ---------- Init ---------- */
+(async () => {
+  await openDB();
+  movies = await all();
+  renderFilters();
+  renderGrid();
+})();
+</script>
+</body>
+</html>
